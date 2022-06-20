@@ -1,0 +1,51 @@
+import openpyxl
+from openpyxl import Workbook
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.styles import NamedStyle, Font, Border, Side
+import pandas as pd
+
+wb = openpyxl.load_workbook("CO.xlsx")
+sheets = wb.sheetnames
+ws = wb['BOQ']
+mapping = {}
+for entry, data_boundary in ws.tables.items():
+    data = ws[data_boundary]
+    content = [[cell.value for cell in ent] for ent in data]
+    header = content[0]
+    rest = content[1:]
+    df = pd.DataFrame(rest, columns=header)
+    mapping[entry] = df
+
+furnizori = ["Eurovial", "Consolight"]
+categorii_furnizor = {"Eurovial": ["CABLURI", "TABLOURI_ELECTRICE"], "Consolight": ["TABLOURI_ELECTRICE", "PAT_DE_CABLU"]}
+
+my_style = NamedStyle(name="Neptun Engineering")
+my_style.font = Font(name='Arial', bold=False, size=10)
+bd = Side(style='thin', color="000000")
+my_style.border = Border(left=bd, top=bd, right=bd, bottom=bd)
+wb.add_named_style(my_style)
+
+for furnizor in furnizori:
+    wb.create_sheet(furnizor)
+    current_ws = wb[furnizor]
+    current_ws.append(["Name", "UM", "Cant", "Tag"])
+    header = [current_ws["A1"], current_ws["B1"], current_ws["C1"], current_ws["D1"]]
+    for cell in header:
+        cell.style = 'Accent1'
+    for row in mapping['BOQ'].iterrows():
+        tag = row[1]["Tag"]
+        if tag in categorii_furnizor[furnizor]:
+            data = [row[1]["Name"], row[1]["UM"], row[1]["Cant"], row[1]["Tag"]]
+            current_ws.append(data)
+
+    tab = Table(displayName=furnizor, ref=f"A1:D{current_ws.max_row}")
+
+    current_ws.add_table(tab)
+    wb.save("CO.xlsx")
+    furnizor_wb = Workbook()
+    furnizor_ws = furnizor_wb.active
+    furnizor_ws.title = furnizor
+    furnizor_ws.append(["Name", "UM", "Cant", "Tag"])
+    furnizor_ws.add_table(tab)
+    furnizor_wb.save(furnizor+".xlsx")
+wb.save("CO.xlsx")
