@@ -1,51 +1,150 @@
+# Import modules
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 import openpyxl
 from openpyxl import Workbook
-from openpyxl.worksheet.table import Table, TableStyleInfo
-from openpyxl.styles import NamedStyle, Font, Border, Side
+from openpyxl.worksheet.table import Table
 import pandas as pd
 
-wb = openpyxl.load_workbook("CO.xlsx")
-sheets = wb.sheetnames
-ws = wb['BOQ']
+# Set up the email addresses and password. Please replace below with your email address and password
+MY_EMAIL = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+MY_PASSWORD = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+
+# Define a function to attach files as MIMEApplication to the email
+def attach_file_to_email(the_email, filename):
+    # Open the attachment file for reading in binary mode, and make it a MIMEApplication class
+    with open(filename, "rb") as f:
+        file_attachment = MIMEApplication(f.read())
+    # Add header/name to the attachments
+    file_attachment.add_header(
+        "Content-Disposition",
+        f"attachment; filename= {filename}",
+    )
+    # Attach the file to the message
+    the_email.attach(file_attachment)
+
+
+# Get request for offer data from workbook
+file = "CereriDeOferta.xlsx"
+wb = openpyxl.load_workbook(file, data_only=True)
+
+# Get all unique Suppliers for EmailingList
+ws = wb['EmailingList']
+
+# Map Suppliers List
 mapping = {}
 for entry, data_boundary in ws.tables.items():
+    # parse the data within the ref boundary
     data = ws[data_boundary]
+    # extract the data
+    # the inner list comprehension gets the values for each cell in the table
+    content = [[cell.value for cell in ent] for ent in data]
+    header = content[0]
+    # the contents ... excluding the header
+    rest = content[1:]
+    # create dataframe with the column names
+    # and pair table name with dataframe
+    df = pd.DataFrame(rest, columns=header)
+    mapping[entry] = df
+
+# Get BoQ with all materials
+boq_ws = wb['BoQ']
+# Map BoQ
+boq_mapping = {}
+for entry, data_boundary in boq_ws.tables.items():
+    data = boq_ws[data_boundary]
     content = [[cell.value for cell in ent] for ent in data]
     header = content[0]
     rest = content[1:]
     df = pd.DataFrame(rest, columns=header)
-    mapping[entry] = df
+    boq_mapping[entry] = df
 
-furnizori = ["Eurovial", "Consolight"]
-categorii_furnizor = {"Eurovial": ["CABLURI", "TABLOURI_ELECTRICE"], "Consolight": ["TABLOURI_ELECTRICE", "PAT_DE_CABLU"]}
+# Make a list of unique Suppliers
+emails = []
+for row in mapping['EMAILING_LIST'].iterrows():
+    if row[1]['Email'] not in [item['Email'] for item in emails]:
+        emails.append({'Email': row[1]['Email'],
+                       'Furnizor': row[1]['Furnizor'],
+                       'Greeting': row[1]['Greeting'],
+                       'Categorii': [],
+                       'Subject': row[1]['Subject'],
+                       'Nume proiect': row[1]['Nume proiect'],
+                       'Faza dezvoltare': row[1]['Faza dezvoltare'],
+                       'Faza proiectare': row[1]['Faza proiectare'],
+                       'Link': row[1]['Link'],
+                       'Termen furnizori': row[1]['Termen furnizori'],
+                       })
 
-my_style = NamedStyle(name="Neptun Engineering")
-my_style.font = Font(name='Arial', bold=False, size=10)
-bd = Side(style='thin', color="000000")
-my_style.border = Border(left=bd, top=bd, right=bd, bottom=bd)
-wb.add_named_style(my_style)
+# Add the material Categories to send RFO to each
+for row in mapping['EMAILING_LIST'].iterrows():
+    email = row[1]['Email']
+    category = row[1]['Categorie']
+    for item in emails:
+        if item['Email'] == email and category not in item['Categorii']:
+            item['Categorii'].append(category)
 
-for furnizor in furnizori:
-    wb.create_sheet(furnizor)
-    current_ws = wb[furnizor]
-    current_ws.append(["Name", "UM", "Cant", "Tag"])
-    header = [current_ws["A1"], current_ws["B1"], current_ws["C1"], current_ws["D1"]]
-    for cell in header:
-        cell.style = 'Accent1'
-    for row in mapping['BOQ'].iterrows():
-        tag = row[1]["Tag"]
-        if tag in categorii_furnizor[furnizor]:
-            data = [row[1]["Name"], row[1]["UM"], row[1]["Cant"], row[1]["Tag"]]
-            current_ws.append(data)
+# Connect to the Gmail SMTP server and Send Email
+context = ssl.create_default_context()
+with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=context) as server:
+    server.login(MY_EMAIL, MY_PASSWORD)
 
-    tab = Table(displayName=furnizor, ref=f"A1:D{current_ws.max_row}")
+    for item in emails:
+        # Set receiver's email address
+        email_to = item['Email']
+        # Set supplier name
+        furnizor = item['Furnizor']
+        # Create a new sheet with the name of the current supplier if it doesn't already exist
+        wb.create_sheet(furnizor)
+        current_boq_ws = wb[furnizor]
+        current_boq_ws.append(["Name", "UM", "Cant", "Categorii"])
+        # Create a separate workbook for each supplier
+        furnizor_wb = Workbook()
+        furnizor_ws = furnizor_wb.active
+        furnizor_ws.title = "BoQ"
+        furnizor_ws.append(["Name", "UM", "Cant", "Categorii"])
 
-    current_ws.add_table(tab)
-    wb.save("CO.xlsx")
-    furnizor_wb = Workbook()
-    furnizor_ws = furnizor_wb.active
-    furnizor_ws.title = furnizor
-    furnizor_ws.append(["Name", "UM", "Cant", "Tag"])
-    furnizor_ws.add_table(tab)
-    furnizor_wb.save(furnizor+".xlsx")
-wb.save("CO.xlsx")
+        current_boq_ws.column_dimensions["A"].width = 80
+        furnizor_ws.column_dimensions["A"].width = 80
+
+        for row in boq_mapping['BoQ'].iterrows():
+            tag = row[1]['Categorii']
+            if tag in item['Categorii']:
+                data = [row[1]["Name"], row[1]["UM"], row[1]["Cant"], row[1]['Categorii']]
+                current_boq_ws.append(data)
+                furnizor_ws.append(data)
+
+        current_supplier = furnizor.replace(" ", "_")
+        tab = Table(headerRowCellStyle="Accent 1", displayName=current_supplier, ref=f"A1:D{current_boq_ws.max_row}")
+
+        current_boq_ws.add_table(tab)
+        furnizor_ws.add_table(tab)
+
+        furnizor_wb.save(current_supplier+".xlsx")
+        wb.save(file)
+
+        # Create a MIMEMultipart class, and set up the "From", "To" and "Subject" fields
+        email_message = MIMEMultipart()
+        email_message['From'] = MY_EMAIL
+        email_message['To'] = email_to
+        # Set subject
+        subject = f'Cerere de oferta - {item["Nume proiect"]} - {", ".join(item["Categorii"])} - {item["Furnizor"]}'
+        email_message['Subject'] = subject
+        # Define and attach the html doc, as a MIMEText html content type to the MIME message
+        html = f'''
+html.txt
+            '''
+
+        email_message.attach(MIMEText(html, "html"))
+        # Attach BoQ
+        attach_file_to_email(email_message, current_supplier+".xlsx")
+        # Convert it as a string
+        email_string = email_message.as_string()
+
+        # Send email
+        server.sendmail(MY_EMAIL, email_to, email_string)
+
+    server.quit()
